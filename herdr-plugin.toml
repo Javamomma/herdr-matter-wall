@@ -1,0 +1,24 @@
+id = "javamomma.matter-wall"
+name = "Matter Wall"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Tile the most-active subdirectories of a project as a live wall of read-only AI status cards."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Matter Wall: open board"
+contexts = ["workspace"]
+command = ["bash", "matter-wall.sh"]
+
+[[actions]]
+id = "close"
+title = "Matter Wall: close board"
+contexts = ["workspace"]
+command = ["bash", "matter-wall.sh", "--close"]
+
+[[actions]]
+id = "dry-run"
+title = "Matter Wall: preview plan (dry run)"
+contexts = ["workspace"]
+command = ["bash", "matter-wall.sh", "--dry-run"]
