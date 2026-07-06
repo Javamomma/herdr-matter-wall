@@ -204,7 +204,7 @@ do_open() {
   for slug in "${chosen[@]}"; do
     pane="${panes[$idx]}"; idx=$((idx+1))
     "$HERDR" pane rename "$pane" "$slug" >/dev/null 2>&1 || true
-    "$HERDR" pane run "$pane" "bash $(printf %q "$0") --card $(printf %q "$slug")"
+    "$HERDR" pane run "$pane" "bash $(printf %q "${SCRIPT_DIR}/$(basename "$0")") --dir $(printf %q "$TARGET_DIR") --card $(printf %q "$slug")"
   done
   echo "matter-wall: wall up (workspace ${ws})"
 }

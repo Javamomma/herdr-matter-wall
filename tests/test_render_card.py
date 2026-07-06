@@ -13,11 +13,11 @@ def render(stdin, slug="alpha", width="40", today="2026-07-06", env=None):
 
 FULL = (
     "<<<CARD\n"
-    "STATUS: awaiting DOI best-and-final\n"
-    "PHASE: litigation\n"
-    "DEADLINE: 2029-01-20 | statutory\n"
-    "RISK: DOI counter delay | HIGH\n"
-    "NEXT: chase Bill McGrath\n"
+    "STATUS: awaiting vendor counter-offer\n"
+    "PHASE: negotiation\n"
+    "DEADLINE: 2029-01-20 | contract deadline\n"
+    "RISK: vendor SLA breach | HIGH\n"
+    "NEXT: chase Jane Doe\n"
     "CARD>>>\n"
 )
 
@@ -28,9 +28,9 @@ def test_fields_present_and_placed():
     r = render(FULL); out = strip_ansi(r.stdout)
     assert r.returncode == 0
     assert "alpha" in out
-    assert "awaiting DOI best-and-final" in out
-    assert "chase Bill McGrath" in out
-    assert "DOI counter delay" in out
+    assert "awaiting vendor counter-offer" in out
+    assert "chase Jane Doe" in out
+    assert "vendor SLA breach" in out
 
 def test_daycount_future():
     out = strip_ansi(render(FULL, today="2026-07-06").stdout)
@@ -43,8 +43,8 @@ def test_daycount_overdue():
     assert "27d OVERDUE" in out
 
 def test_no_line_exceeds_width():
-    block = FULL.replace("chase Bill McGrath",
-                         "chase Bill McGrath and the entire Solicitor's office about the best and final and everything else too")
+    block = FULL.replace("chase Jane Doe",
+                         "chase Jane Doe and the whole procurement team about the renewal and everything else too so it exceeds the width")
     out = strip_ansi(render(block, width="40").stdout)
     for ln in out.splitlines():
         assert len(ln) <= 40, repr(ln)

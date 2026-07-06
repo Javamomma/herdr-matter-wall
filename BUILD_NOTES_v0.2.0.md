@@ -148,11 +148,9 @@ company-specific rewrite needed here.
 
 ## Leakage check
 
-```
-grep -riE "twin metals|tmm|antofagasta|federal-lease|prla|mera|cra-plo|\.pai|/home/ajavaherian|javaherian|CLAUDE\.md" . | grep -v '\.git/'
-```
-
-Empty — no company/personal-specific strings found in the working tree.
+Grepped the working tree for a list of internal identifiers (organization
+names, personal names, internal paths, and internal tool/file conventions) —
+result: clean. No company/personal-specific strings found.
 
 ## Verification run
 

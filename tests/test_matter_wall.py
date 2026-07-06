@@ -160,6 +160,37 @@ def test_open_spawns_card_mode_per_item(project_tree, stub_bin):
     assert logged.count("--card bravo") == 1
 
 
+def test_open_forwards_resolved_dir_to_card_spawn(project_tree, stub_bin):
+    # Regression test: do_open's `pane run` must forward the already-resolved
+    # $TARGET_DIR into the spawned --card process via `--dir`. Without this,
+    # the spawned process re-resolves its own target dir from scratch (its
+    # own $PWD/env), silently losing a --dir/$MATTER_WALL_DIR override.
+    root, make = project_tree
+    make("alpha", mtime=2)
+    make("bravo", mtime=1)
+    other_cwd = root / "elsewhere"
+    other_cwd.mkdir()
+    stub_dir, log = stub_bin
+    r = run_script(other_cwd, ["alpha", "bravo", "--dir", str(root)], stub_bin_dir=stub_dir)
+    assert r.returncode == 0, r.stderr
+    logged = log.read_text()
+    pane_run_lines = [
+        l for l in logged.splitlines()
+        if "pane run" in l and "--card" in l
+    ]
+    assert len(pane_run_lines) == 2
+    for slug in ("alpha", "bravo"):
+        matching = [l for l in pane_run_lines if f"--card {slug}" in l]
+        assert len(matching) == 1, pane_run_lines
+        line = matching[0]
+        # Both the resolved target dir and the slug must be forwarded to the
+        # very same spawned command, and --dir must precede --card so the
+        # spawned process's own arg parser applies it at top priority.
+        assert f"--dir {root}" in line, line
+        assert line.index("--dir") < line.index("--card")
+        assert str(other_cwd) not in line
+
+
 def test_open_multi_row_tiles_down_and_spawns_all(project_tree, stub_bin):
     # 5 explicit slugs -> cols=ceil(sqrt(5))=3, rows=ceil(5/3)=2, so the
     # down-split (multi-row) branch of the tiler must run at least once.
