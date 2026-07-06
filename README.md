@@ -9,18 +9,21 @@ monorepo, packages in a workspace, projects in a portfolio, matters in a
 practice — any set of subdirectories you want a standing status board for.
 
 ```
-┌─ billing-service          ┌─ auth-service             ┌─ notifications
-│ Status: mid-refactor      │ Status: stable            │ Status: blocked on…
-│ Next milestone: …         │ Next milestone: none found│ Next milestone: …
-│ Top risk: …                │ Top risk: none found      │ Top risk: …
-│ Last activity: …           │ Last activity: …          │ Last activity: …
-│ Needs attention: …         │ Needs attention: nothing  │ Needs attention: …
-└─                           └─                          └─
+╭ billing-service ───────╮  ╭ auth-service ───────────╮  ╭ notifications ─────────╮
+│ ● mid-refactor         │  │ ● stable                │  │ ● blocked on…          │
+│ 📅 2026-08-01 · 12d    │  │ 📅 none                 │  │ 📅 2026-07-10 OVERDUE  │
+│ ⚠ none                 │  │ ⚠ none                  │  │ ⚠ vendor outage · HIGH │
+│ ▶ ship the migration   │  │ ▶ nothing pending       │  │ ▶ page on-call         │
+╰─────────────────────────╯  ╰─────────────────────────╯  ╰─────────────────────────╯
 ```
 
-Each card agent is spawned with a strict read-only tool allowlist — it can
-read files and `git log`, and nothing else. It cannot write, edit, or run
-arbitrary commands.
+Each card is drawn by a small, pure bash renderer (`render-card.sh`) from a
+compact structured block the agent emits — colored and border-severity-coded
+by deadline/risk (red = overdue or high risk, amber = due soon or medium
+risk, green = healthy), width-fit to the pane, `NO_COLOR`-aware. The agent
+itself is spawned with a strict read-only tool allowlist — it can read files
+and `git log`, and nothing else. It cannot write, edit, or run arbitrary
+commands.
 
 ## Requirements
 
@@ -28,6 +31,8 @@ arbitrary commands.
 - the [`claude`](https://claude.com/product/claude-code) CLI, logged in
 - `jq`
 - `bash`
+- a UTF-8 locale (the card renderer slices strings by character for
+  truncation/padding, which assumes single-byte-safe UTF-8 handling)
 
 ## Install
 
@@ -66,7 +71,14 @@ bash matter-wall.sh                        # open the wall (top-5 by recency)
 bash matter-wall.sh billing-service auth-service   # open specific items
 bash matter-wall.sh --close                # tear the wall down
 bash matter-wall.sh --refresh billing-service      # re-run one card in place
+bash matter-wall.sh --card billing-service         # render one card to stdout, standalone
 ```
+
+`--card <slug>` is what each wall pane actually runs under the hood (`open`
+spawns `bash matter-wall.sh --card <slug>` per pane): it `cd`s into the
+item's subdirectory, runs the read-only card agent, then pipes its output
+through `render-card.sh` to draw the box. It's also handy to run directly
+against a single item without opening the whole wall.
 
 ### How it picks subdirectories
 
@@ -100,12 +112,16 @@ directory to scan, in this order:
 | `--limit <n>` | flag | `5` | Max cards to show when no explicit names are given |
 | `--model <name>` | flag | `claude-haiku-4-5-20251001` | Model used for each card agent |
 | `--refresh <slug>` | flag | — | Re-run a single card in place (serialized — refuses if another refresh is running) |
+| `--card <slug>` | flag | — | Render one card standalone: `cd` into the item, run the card agent, pipe through `render-card.sh` |
 | `--close` | flag | — | Tear down the wall workspace |
 | `--dry-run` | flag | — | Print the plan (or the refresh/close plan) without touching herdr |
 | `$MATTER_WALL_HERDR` | env | `$HERDR_BIN_PATH` or `herdr` | Path to the herdr binary |
 | `$MATTER_WALL_CLAUDE` | env | `claude` | Path to the claude binary |
 | `$MATTER_WALL_PROMPT` | env | `<plugin dir>/card-prompt.md` | Override the card prompt template |
 | `$MATTER_WALL_STATE_DIR` | env | `<target dir>/.matter-wall` | Where the refresh lockfile lives |
+| `$MATTER_WALL_CARD_TIMEOUT` | env | `120` (seconds) | Timeout for the card agent invoked by `--card` |
+| `$MATTER_WALL_FORCE_COLOR` | env | — | Force `render-card.sh` to emit color even when stdout isn't a TTY (set automatically when `--card` pipes into it) |
+| `$NO_COLOR` | env | — | Standard no-color opt-out, honored by `render-card.sh` |
 
 The script also accepts either `$HERDR_ENV` or `$HERDR_SOCKET_PATH` as proof
 it's running inside a herdr session (a plugin action sets the socket path but
@@ -136,6 +152,12 @@ command = "javamomma.matter-wall.open"
 - **Fail-visible:** unknown flags and missing required flag values exit `64`;
   a missing target directory or missing prompt template exits `66`; running
   outside herdr exits `1` with a clear message. Nothing fails silently.
+- **Card rendering is a separate, pure step:** the card agent's prompt asks
+  for a fenced `<<<CARD ... CARD>>>` block (`STATUS`/`PHASE`/`DEADLINE`/
+  `RISK`/`NEXT`); `render-card.sh` parses that block and draws the box. It
+  never calls an LLM or herdr itself, always exits `0`, and falls back to a
+  dim "(no summary)" card if the agent's output doesn't contain a well-formed
+  block — a card is never allowed to error the whole wall out.
 
 ## Testing
 
@@ -145,6 +167,9 @@ python -m pytest tests/ -v
 
 The suite stubs out `herdr` and `claude` as logging shell scripts under a
 temp `PATH`, so it never talks to a real herdr server or spends any tokens.
+`tests/test_render_card.py` exercises `render-card.sh` directly (no stubs
+needed — it's pure bash reading stdin) for width-fitting, truncation,
+day-count math, color/`NO_COLOR` behavior, and the no-block fallback.
 
 ## License
 

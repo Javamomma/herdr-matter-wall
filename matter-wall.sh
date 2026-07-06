@@ -150,6 +150,18 @@ wall_first_pane() {
 
 pane_id_from() { jq -r '.result.pane.pane_id // .result.root_pane.pane_id // empty'; }
 
+do_card() {
+  local slug="$1"
+  local w; w="${COLUMNS:-$(tput cols 2>/dev/null || echo 40)}"
+  printf '\033[2m⏳ %s …\033[0m\n' "$slug"
+  cd "${TARGET_DIR}/${slug}" 2>/dev/null || true
+  local out
+  out="$(timeout "${MATTER_WALL_CARD_TIMEOUT:-120}" "$CLAUDE" -p "$(render_prompt "$slug")" \
+        --model "$MODEL" --allowedTools 'Read Grep Glob Bash(git log:*)' 2>/dev/null)" || true
+  clear 2>/dev/null || printf '\033[2J\033[H'
+  printf '%s' "$out" | MATTER_WALL_FORCE_COLOR=1 bash "${SCRIPT_DIR}/render-card.sh" "$slug" "$w"
+}
+
 do_open() {
   require_herdr
   mapfile -t chosen < <(select_items)
@@ -183,15 +195,16 @@ do_open() {
     c=$(( (c+1) % cols ))
   done
 
-  # Spawn one read-only card agent per pane, cd'd into its own subdirectory
-  # (a plugin-action pane's default cwd is not guaranteed to be the target
-  # project, so each card agent gets an explicit, absolute cd).
-  local idx=0 slug pane prompt
+  # Spawn one read-only card agent per pane via the hidden --card mode, which
+  # cd's into the item's own subdirectory, renders the prompt, invokes the
+  # model, then hands the transcript to render-card.sh for a colored,
+  # width-fitted card (a plugin-action pane's default cwd is not guaranteed
+  # to be the target project, so --card does an explicit, absolute cd).
+  local idx=0 slug pane
   for slug in "${chosen[@]}"; do
     pane="${panes[$idx]}"; idx=$((idx+1))
     "$HERDR" pane rename "$pane" "$slug" >/dev/null 2>&1 || true
-    prompt="$(render_prompt "$slug")"
-    "$HERDR" pane run "$pane" "cd $(printf %q "${TARGET_DIR}/${slug}") && $CLAUDE -p $(printf %q "$prompt") --model $MODEL --allowedTools 'Read Grep Glob Bash(git log:*)'"
+    "$HERDR" pane run "$pane" "bash $(printf %q "$0") --card $(printf %q "$slug")"
   done
   echo "matter-wall: wall up (workspace ${ws})"
 }
@@ -236,6 +249,7 @@ LIMIT="$DEFAULT_LIMIT"
 MODEL="$DEFAULT_MODEL"
 REFRESH_SLUG=""
 RENDER_SLUG=""
+CARD_SLUG=""
 GRID_N=""
 DRY_RUN=0
 declare -a SLUGS=()
@@ -256,6 +270,9 @@ while [[ $# -gt 0 ]]; do
     --render-prompt)
       [[ $# -ge 2 ]] || { echo "matter-wall: --render-prompt requires a value" >&2; exit 64; }
       MODE="render-prompt"; RENDER_SLUG="$2"; shift 2;;
+    --card)
+      [[ $# -ge 2 ]] || { echo "matter-wall: --card requires a value" >&2; exit 64; }
+      MODE="card"; CARD_SLUG="$2"; shift 2;;
     --limit)
       [[ $# -ge 2 ]] || { echo "matter-wall: --limit requires a value" >&2; exit 64; }
       LIMIT="$2"; shift 2;;
@@ -285,6 +302,7 @@ case "$MODE" in
   rank-only) rank_items "$LIMIT";;
   grid-dims) grid_dims "$GRID_N";;
   render-prompt) render_prompt "$RENDER_SLUG";;
+  card) do_card "$CARD_SLUG";;
   refresh)
     if [[ "$DRY_RUN" -eq 1 ]]; then echo "PLAN refresh=${REFRESH_SLUG}"; exit 0; fi
     do_refresh "$REFRESH_SLUG";;

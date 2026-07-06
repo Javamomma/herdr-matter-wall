@@ -9,23 +9,25 @@ Your current directory IS `{{SLUG}}`. Read (do not write or modify anything):
 - `git log` history for this directory, if it is inside a git repository
   (read-only — you may only run `git log`)
 
-Output EXACTLY this compact card, nothing else:
+Output ONLY this block, nothing before or after it:
 
-  ┌─ {{SLUG}}
-  │ Status:          <one line>
-  │ Next milestone:  <date/description, or "none found">
-  │ Top risk:        <most notable risk or blocker, or "none found">
-  │ Last activity:   <most recent dated entry or commit>
-  │ Needs attention: <the single most important open item, or "nothing pending">
-  └─
+<<<CARD
+STATUS: <short phrase: where this item stands now>
+PHASE: <one word describing its stage>
+DEADLINE: <YYYY-MM-DD> | <short label>
+RISK: <short text> | <HIGH|MED|LOW>
+NEXT: <the single most important open item>
+CARD>>>
 
 Rules:
 
-- Be brief and direct. No preamble, no restating the question, no markdown
-  fences around the card.
-- Do not invent facts. If a file listed above is absent, say so in your own
-  reasoning — do not guess at its contents or pretend you read it.
-- If a date, name, or fact is genuinely unclear from what you read, mark that
-  field "[uncertain]" rather than stating it as settled.
-- Never fabricate dates, deadlines, or risks that are not grounded in
-  something you actually read in this directory.
+- Emit the deadline as the DATE you actually read — do NOT compute day-counts
+  yourself (the tool that renders this card does that). Use `DEADLINE: NONE`
+  if there is no dated deadline.
+- Use `RISK: none | NONE` and `NEXT: none` when there is nothing to report.
+- Keep each value to one short line.
+- Do not invent facts. If a file listed above is absent, treat the
+  corresponding field as NONE rather than guessing at its contents or
+  pretending you read it.
+- No preamble, no restating the question, no markdown fences, no text
+  outside the block.

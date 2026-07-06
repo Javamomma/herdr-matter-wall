@@ -136,18 +136,28 @@ def test_open_spawns_one_card_per_item(project_tree, stub_bin):
     r = run_script(root, ["alpha", "bravo"], stub_bin_dir=stub_dir)
     assert r.returncode == 0, r.stderr
     logged = log.read_text()
-    # Exactly two card agents launched via `herdr pane run ... claude -p ...`.
+    # Exactly two card agents launched via `herdr pane run ... --card <slug>`.
+    # The read-only tool allowlist now lives inside the hidden --card mode
+    # (invisible to this stub, which only records the outer pane-run command);
+    # see test_card_mode_invokes_claude_with_readonly_allowlist for that.
     pane_run_lines = [
         l for l in logged.splitlines()
-        if "pane run" in l and "claude -p" in l
+        if "pane run" in l and "--card" in l
     ]
     assert len(pane_run_lines) == 2
 
-    # The read-only tool allowlist is the feature's core safety invariant:
-    # every spawned card must carry it verbatim, with no write-capable tools.
-    allowlist = "Read Grep Glob Bash(git log:*)"
-    for line in pane_run_lines:
-        assert allowlist in line
+
+def test_open_spawns_card_mode_per_item(project_tree, stub_bin):
+    root, make = project_tree
+    make("alpha", mtime=2)
+    make("bravo", mtime=1)
+    stub_dir, log = stub_bin
+    r = run_script(root, ["alpha", "bravo"], stub_bin_dir=stub_dir)
+    assert r.returncode == 0, r.stderr
+    logged = log.read_text()
+    # each pane now runs the hidden --card mode, not a raw `claude -p`
+    assert logged.count("--card alpha") == 1
+    assert logged.count("--card bravo") == 1
 
 
 def test_open_multi_row_tiles_down_and_spawns_all(project_tree, stub_bin):
@@ -171,9 +181,38 @@ def test_open_multi_row_tiles_down_and_spawns_all(project_tree, stub_bin):
     assert len(down_splits) >= 1
     pane_run_lines = [
         l for l in logged.splitlines()
-        if "pane run" in l and "claude -p" in l
+        if "pane run" in l and "--card" in l
     ]
     assert len(pane_run_lines) == 5
+
+
+def test_card_mode_invokes_claude_with_readonly_allowlist(project_tree, stub_bin, tmp_path):
+    # Hermetic test for the hidden --card mode itself: it never calls
+    # require_herdr, so it runs fully standalone (no herdr server, no herdr
+    # binary in the loop) against a stubbed `claude` and the real, pure
+    # render-card.sh.
+    root, make = project_tree
+    make("alpha", mtime=1)
+    # The packaged card-prompt.md is multi-line; the stub logs each
+    # invocation via bash's `echo "claude $*"`, which preserves embedded
+    # newlines from the rendered prompt argument. That would split a single
+    # `claude` invocation across several physical log lines and break the
+    # single-line `claude_lines[0]` assertion below even though only one
+    # `claude` process actually ran. Point MATTER_WALL_PROMPT at a
+    # single-line template instead — this is test scaffolding only, it does
+    # not touch matter-wall.sh's --card code path or the real card-prompt.md.
+    single_line_tpl = tmp_path / "card-prompt-single-line.md"
+    single_line_tpl.write_text("Read-only status card for {{SLUG}}.\n")
+    stub_dir, log = stub_bin
+    r = run_script(
+        root, ["--card", "alpha"],
+        stub_bin_dir=stub_dir,
+        extra_env={"MATTER_WALL_PROMPT": str(single_line_tpl)},
+    )
+    assert r.returncode == 0, r.stderr
+    claude_lines = [l for l in log.read_text().splitlines() if l.startswith("claude ")]
+    assert len(claude_lines) == 1
+    assert "--allowedTools Read Grep Glob Bash(git log:*)" in claude_lines[0]
 
 
 def test_refresh_refuses_when_locked(project_tree, stub_bin):
