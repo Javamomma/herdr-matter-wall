@@ -19,18 +19,32 @@ rst()  { (( USE_COLOR )) && printf '\033[0m'; return 0; }
 raw="$(cat)"
 block="$(printf '%s\n' "$raw" | awk '/<<<CARD/{f=1;next} /CARD>>>/{f=0} f')"
 field() { printf '%s\n' "$block" | grep -m1 "^$1:" | sed "s/^$1:[[:space:]]*//"; }
+# Extract "- " bullet lines under a LIST header ("RECENT:"/"AWAITING:") until
+# the next ALL-CAPS "KEY:" header or block end.
+list_field() {
+  local key="$1"
+  printf '%s\n' "$block" | awk -v key="${key}:" '
+    index($0, key) == 1 { f=1; next }
+    /^[A-Z][A-Z_]*:/ { f=0 }
+    f && /^-/ { sub(/^-[[:space:]]*/, ""); print }
+  '
+}
 
 FALLBACK=0
+declare -a RECENT_ITEMS=() AWAITING_ITEMS=()
 if [[ -n "$block" ]]; then
-  STATUS="$(field STATUS)"; DEADLINE="$(field DEADLINE)"; RISK="$(field RISK)"; NEXT="$(field NEXT)"
+  STATUS="$(field STATUS)"; PHASE="$(field PHASE)"
+  DEADLINE="$(field DEADLINE)"; RISK="$(field RISK)"; NEXT="$(field NEXT)"
+  mapfile -t RECENT_ITEMS < <(list_field RECENT)
+  mapfile -t AWAITING_ITEMS < <(list_field AWAITING)
 else
   FALLBACK=1
   first="$(printf '%s\n' "$raw" | grep -m1 -v '^[[:space:]]*$' | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')"
   STATUS="(no summary)"; [[ -n "$first" ]] && STATUS="(no summary) — $first"
-  DEADLINE="NONE"; RISK="NONE"; NEXT="none"
+  PHASE=""; DEADLINE="NONE"; RISK="NONE"; NEXT="none"
 fi
 [[ -z "${STATUS:-}" ]] && STATUS="(no summary)"
-: "${DEADLINE:=NONE}" "${RISK:=NONE}" "${NEXT:=none}"
+: "${DEADLINE:=NONE}" "${RISK:=NONE}" "${NEXT:=none}" "${PHASE:=}"
 
 # deadline
 dl_text=""; dl_rank=-1
@@ -70,7 +84,34 @@ trunc() { local s="$1" m="$2"; (( m < 1 )) && m=1; if (( ${#s} > m )); then prin
 # repeat a (possibly multi-byte) char N times; `tr` is byte-wise and mangles UTF-8, so build in bash
 repeat_char() { local ch="$1" n="$2" s="" i; (( n <= 0 )) && return 0; for (( i = 0; i < n; i++ )); do s+="$ch"; done; printf '%s' "$s"; }
 
-# print one framed content line.  args: icon icon_display_width text valuecolor
+# word-wrap TEXT to MAXW columns (like `fold -s`): break on spaces, no
+# mid-word breaks unless a single token exceeds MAXW (then hard-truncate with
+# an ellipsis). Result lines land in the WRAP_OUT array (always >=1 line).
+wrap() {
+  local text="$1" maxw="$2"
+  (( maxw < 1 )) && maxw=1
+  WRAP_OUT=()
+  local word cur=""
+  for word in $text; do
+    if (( ${#word} > maxw )); then
+      [[ -n "$cur" ]] && { WRAP_OUT+=("$cur"); cur=""; }
+      WRAP_OUT+=("$(trunc "$word" "$maxw")")
+      continue
+    fi
+    if [[ -z "$cur" ]]; then
+      cur="$word"
+    elif (( ${#cur} + 1 + ${#word} <= maxw )); then
+      cur="$cur $word"
+    else
+      WRAP_OUT+=("$cur"); cur="$word"
+    fi
+  done
+  [[ -n "$cur" ]] && WRAP_OUT+=("$cur")
+  (( ${#WRAP_OUT[@]} == 0 )) && WRAP_OUT=("")
+}
+
+# print one framed content line WITH a leading icon (first line of a field).
+# args: icon icon_display_width text valuecolor
 line() {
   local icon="$1" iw="$2" text="$3" col="$4"
   local maxt=$(( INNER - iw - 1 )); (( maxt < 1 )) && maxt=1
@@ -79,6 +120,40 @@ line() {
   c "$BORDER"; printf '│'; rst; printf ' %s ' "$icon"
   [[ -n "$col" ]] && c "$col"; printf '%s' "$text"; [[ -n "$col" ]] && rst
   printf '%*s ' "$pad" ''; c "$BORDER"; printf '│'; rst; printf '\n'
+}
+
+# print one framed content line with NO icon — used for wrapped continuation
+# lines and section rules. Content is truncated/padded to exactly INNER cols.
+frameline() {
+  local text="$1" col="$2"
+  text="$(trunc "$text" "$INNER")"
+  local pad=$(( INNER - ${#text} )); (( pad < 0 )) && pad=0
+  c "$BORDER"; printf '│ '; rst
+  [[ -n "$col" ]] && c "$col"; printf '%s' "$text"; [[ -n "$col" ]] && rst
+  printf '%*s' "$pad" ''; c "$BORDER"; printf ' │'; rst; printf '\n'
+}
+
+# print a wrapped field: first line via `line` (with icon), continuation
+# lines via `frameline`, hanging-indented under the icon.
+wrapped_line() {
+  local icon="$1" iw="$2" text="$3" col="$4"
+  local avail=$(( INNER - iw - 1 )); (( avail < 1 )) && avail=1
+  wrap "$text" "$avail"
+  line "$icon" "$iw" "${WRAP_OUT[0]}" "$col"
+  local indent; indent="$(repeat_char ' ' $(( iw + 1 )))"
+  local i
+  for (( i = 1; i < ${#WRAP_OUT[@]}; i++ )); do
+    frameline "${indent}${WRAP_OUT[$i]}" "$col"
+  done
+}
+
+# dim section rule, e.g. "── Recent (last 5–10d) ──", dashes fill to INNER.
+rule() {
+  local label="$1" prefix fill content
+  prefix="── ${label} "
+  fill=$(( INNER - ${#prefix} ))
+  if (( fill > 0 )); then content="${prefix}$(repeat_char '─' "$fill")"; else content="$prefix"; fi
+  frameline "$content" "$DIM"
 }
 
 # top rule with slug (gold), fill to WIDTH
@@ -93,10 +168,31 @@ bottom() { c "$BORDER"; printf '╰'; repeat_char '─' $(( WIDTH - 2 )); printf
 
 # --- draw ---
 top
-line "●" 1 "$STATUS" ""
-if [[ -n "$dl_text" ]]; then line "📅" 2 "$dl_text" "$(rankcol "$dl_rank")"; else line "📅" 2 "none" "$DIM"; fi
-if [[ -n "$risk_text" ]]; then line "⚠" 1 "$risk_text" "$(rankcol "$risk_rank")"; else line "⚠" 1 "none" "$DIM"; fi
-if [[ -n "$NEXT" && "${NEXT,,}" != "none" ]]; then line "▶" 1 "$NEXT" "$CYAN"; else line "▶" 1 "nothing pending" "$DIM"; fi
+wrapped_line "●" 1 "$STATUS" ""
+if (( ! FALLBACK )) && [[ -n "$PHASE" ]]; then
+  wrap "phase: $PHASE" "$INNER"; for _seg in "${WRAP_OUT[@]}"; do frameline "$_seg" "$DIM"; done
+fi
+if [[ -n "$dl_text" ]]; then line "◆" 1 "$dl_text" "$(rankcol "$dl_rank")"; else line "◆" 1 "none" "$DIM"; fi
+if [[ -n "$risk_text" ]]; then wrapped_line "⚠" 1 "$risk_text" "$(rankcol "$risk_rank")"; else line "⚠" 1 "none" "$DIM"; fi
+
+if (( ! FALLBACK )); then
+  rule "Recent (last 5–10d)"
+  if (( ${#RECENT_ITEMS[@]} == 0 )); then
+    wrapped_line "•" 1 "none" "$DIM"
+  else
+    n=${#RECENT_ITEMS[@]}; cap=6; (( n < cap )) && cap=$n
+    for (( i = 0; i < cap; i++ )); do wrapped_line "•" 1 "${RECENT_ITEMS[$i]}" ""; done
+    (( n > 6 )) && wrapped_line "•" 1 "…(+$(( n - 6 )) more)" "$DIM"
+  fi
+
+  if (( ${#AWAITING_ITEMS[@]} > 0 )); then
+    rule "Awaiting"
+    n=${#AWAITING_ITEMS[@]}; cap=3; (( n < cap )) && cap=$n
+    for (( i = 0; i < cap; i++ )); do wrapped_line "•" 1 "${AWAITING_ITEMS[$i]}" ""; done
+  fi
+fi
+
+if [[ -n "$NEXT" && "${NEXT,,}" != "none" ]]; then wrapped_line "▶" 1 "$NEXT" "$CYAN"; else line "▶" 1 "nothing pending" "$DIM"; fi
 bottom
 c "$DIM"; printf ' as of %s\n' "$(date +%H:%M)"; rst
 exit 0

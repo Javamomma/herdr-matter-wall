@@ -1,6 +1,6 @@
 id = "javamomma.matter-wall"
 name = "Matter Wall"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.0"
 description = "Tile the most-active subdirectories of a project as a live wall of read-only AI status cards."
 platforms = ["linux", "macos"]

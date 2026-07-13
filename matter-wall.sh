@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # matter-wall — a glanceable herdr board of a project's most-active
-# subdirectories. Spawns one read-only AI card agent per subdirectory pane;
-# hybrid serialized --refresh so cards never trample each other.
+# subdirectories. Spawns one read-only AI card agent per subdirectory, each
+# in its own full-screen tab; hybrid serialized --refresh so cards never
+# trample each other.
 set -euo pipefail
 
 HERDR="${MATTER_WALL_HERDR:-${HERDR_BIN_PATH:-herdr}}"
@@ -131,13 +132,6 @@ require_herdr() {
   "$HERDR" status server >/dev/null 2>&1 || { echo "matter-wall: herdr server not running" >&2; exit 1; }
 }
 
-grid_dims() {
-  local n="$1" cols rows
-  cols=$(awk -v n="$n" 'BEGIN{c=int(sqrt(n)); if(c*c<n)c++; print c}')
-  rows=$(awk -v n="$n" -v c="$cols" 'BEGIN{r=int(n/c); if(r*c<n)r++; print r}')
-  echo "$cols $rows"
-}
-
 wall_workspace_id() {
   "$HERDR" workspace list 2>/dev/null \
     | jq -r '.result.workspaces[]? | select(.label=="Matter Wall") | .workspace_id' | head -1
@@ -152,7 +146,7 @@ pane_id_from() { jq -r '.result.pane.pane_id // .result.root_pane.pane_id // emp
 
 do_card() {
   local slug="$1"
-  local w; w="${COLUMNS:-$(tput cols 2>/dev/null || echo 40)}"
+  local w; w="${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}"; [[ "$w" =~ ^[0-9]+$ ]] || w=80; (( w > 100 )) && w=100
   printf '\033[2m⏳ %s …\033[0m\n' "$slug"
   cd "${TARGET_DIR}/${slug}" 2>/dev/null || true
   local out
@@ -166,47 +160,37 @@ do_open() {
   require_herdr
   mapfile -t chosen < <(select_items)
   [[ ${#chosen[@]} -gt 0 ]] || { echo "matter-wall: no items to show" >&2; exit 1; }
-  echo "matter-wall: opening ${#chosen[@]} ${MODEL} card agent(s) (~${#chosen[@]} calls)"
+  echo "matter-wall: opening ${#chosen[@]} ${MODEL} card agent(s) (~${#chosen[@]} calls) — one per tab"
 
   # Idempotency: close any existing wall.
   local existing; existing="$(wall_workspace_id || true)"
   [[ -n "$existing" ]] && "$HERDR" workspace close "$existing" >/dev/null 2>&1 || true
 
-  # Create workspace; capture root pane.
+  # Create workspace; its first tab's root pane is the first tab we use.
   local ws root; root="$("$HERDR" workspace create --label "$WORKSPACE_LABEL" --no-focus | pane_id_from)"
   ws="$(wall_workspace_id)"
+  local first_tab; first_tab="$("$HERDR" tab list --workspace "$ws" 2>/dev/null | jq -r '.result.tabs[0].tab_id // empty')"
 
-  # Tile: build panes list starting from root.
-  local n="${#chosen[@]}"; read -r cols _ < <(grid_dims "$n")
-  declare -a panes=("$root") col_bottom=()
-  # first row: split root right (cols-1) times
-  local i last="$root"
-  for ((i=1; i<cols && ${#panes[@]}<n; i++)); do
-    last="$("$HERDR" pane split "$last" --direction right --no-focus | pane_id_from)"
-    panes+=("$last")
-  done
-  col_bottom=("${panes[@]}")
-  # remaining panes: split downward, round-robin across columns
-  local c=0
-  while (( ${#panes[@]} < n )); do
-    local target="${col_bottom[$c]}"
-    local np; np="$("$HERDR" pane split "$target" --direction down --no-focus | pane_id_from)"
-    panes+=("$np"); col_bottom[$c]="$np"
-    c=$(( (c+1) % cols ))
-  done
-
-  # Spawn one read-only card agent per pane via the hidden --card mode, which
-  # cd's into the item's own subdirectory, renders the prompt, invokes the
-  # model, then hands the transcript to render-card.sh for a colored,
-  # width-fitted card (a plugin-action pane's default cwd is not guaranteed
-  # to be the target project, so --card does an explicit, absolute cd).
+  # Spawn one read-only card agent per item, each in its own full-screen tab,
+  # via the hidden --card mode, which cd's into the item's own subdirectory,
+  # renders the prompt, invokes the model, then hands the transcript to
+  # render-card.sh for a colored, width-fitted card (a plugin-action pane's
+  # default cwd is not guaranteed to be the target project, so --card does an
+  # explicit, absolute cd — and $TARGET_DIR is forwarded via --dir so the
+  # spawned process doesn't have to re-resolve it from scratch).
   local idx=0 slug pane
   for slug in "${chosen[@]}"; do
-    pane="${panes[$idx]}"; idx=$((idx+1))
-    "$HERDR" pane rename "$pane" "$slug" >/dev/null 2>&1 || true
+    if (( idx == 0 )); then
+      pane="$root"
+      [[ -n "$first_tab" ]] && "$HERDR" tab rename "$first_tab" "$slug" >/dev/null 2>&1 || true
+    else
+      pane="$("$HERDR" tab create --workspace "$ws" --label "$slug" --no-focus | jq -r '.result.root_pane.pane_id // empty')"
+    fi
+    [[ -n "$pane" ]] || continue
     "$HERDR" pane run "$pane" "bash $(printf %q "${SCRIPT_DIR}/$(basename "$0")") --dir $(printf %q "$TARGET_DIR") --card $(printf %q "$slug")"
+    idx=$((idx+1))
   done
-  echo "matter-wall: wall up (workspace ${ws})"
+  echo "matter-wall: wall up (workspace ${ws}, ${#chosen[@]} tabs — prefix+1..9 / prefix+n to switch)"
 }
 
 do_refresh() {
@@ -250,7 +234,6 @@ MODEL="$DEFAULT_MODEL"
 REFRESH_SLUG=""
 RENDER_SLUG=""
 CARD_SLUG=""
-GRID_N=""
 DRY_RUN=0
 declare -a SLUGS=()
 
@@ -260,9 +243,6 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "matter-wall: --dir requires a value" >&2; exit 64; }
       TARGET_DIR_FLAG="$2"; shift 2;;
     --rank-only) MODE="rank-only"; shift;;
-    --grid-dims)
-      [[ $# -ge 2 ]] || { echo "matter-wall: --grid-dims requires a value" >&2; exit 64; }
-      MODE="grid-dims"; GRID_N="$2"; shift 2;;
     --close) MODE="close"; shift;;
     --refresh)
       [[ $# -ge 2 ]] || { echo "matter-wall: --refresh requires a value" >&2; exit 64; }
@@ -300,7 +280,6 @@ print_plan() {
 
 case "$MODE" in
   rank-only) rank_items "$LIMIT";;
-  grid-dims) grid_dims "$GRID_N";;
   render-prompt) render_prompt "$RENDER_SLUG";;
   card) do_card "$CARD_SLUG";;
   refresh)

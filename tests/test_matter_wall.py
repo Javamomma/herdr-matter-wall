@@ -1,5 +1,3 @@
-import pytest
-
 from tests._util import run_script
 
 
@@ -27,6 +25,18 @@ def test_rank_only_respects_limit(project_tree):
         make(slug, mtime=1000 + i)
     r = run_script(root, ["--rank-only", "--limit", "3"])
     assert r.stdout.split() == ["f", "e", "d"]
+
+
+def test_default_limit_is_five(project_tree):
+    root, make = project_tree
+    for i, slug in zip(range(6), ["a", "b", "c", "d", "e", "f"]):
+        make(slug, mtime=1000 + i)
+    r = run_script(root, ["--dry-run"])
+    assert r.returncode == 0, r.stderr
+    line = [l for l in r.stdout.splitlines() if l.startswith("PLAN")][0]
+    # most-recent 5 (f, e, d, c, b) — full-screen tabs aren't size-constrained,
+    # so the default wall is the classic top-5, not a smaller tiled-panes default
+    assert "matters=f,e,d,c,b" in line
 
 
 def test_dry_run_lists_explicit_slugs_in_order(project_tree):
@@ -90,17 +100,6 @@ def test_render_prompt_missing_template_exits_66(tmp_path):
                    extra_env={"MATTER_WALL_PROMPT": str(missing)})
     assert r.returncode == 66, r.stderr
     assert "card-prompt.md" in r.stderr
-
-
-@pytest.mark.parametrize("n,expected", [
-    (1, "1 1"), (2, "2 1"), (3, "2 2"), (4, "2 2"),
-    (5, "3 2"), (6, "3 2"), (7, "3 3"), (8, "3 3"), (9, "3 3"),
-])
-def test_grid_dims(project_tree, n, expected):
-    root, _ = project_tree
-    r = run_script(root, ["--grid-dims", str(n)])
-    assert r.returncode == 0, r.stderr
-    assert r.stdout.strip() == expected
 
 
 def test_open_requires_herdr_env_or_socket(project_tree):
@@ -191,30 +190,23 @@ def test_open_forwards_resolved_dir_to_card_spawn(project_tree, stub_bin):
         assert str(other_cwd) not in line
 
 
-def test_open_multi_row_tiles_down_and_spawns_all(project_tree, stub_bin):
-    # 5 explicit slugs -> cols=ceil(sqrt(5))=3, rows=ceil(5/3)=2, so the
-    # down-split (multi-row) branch of the tiler must run at least once.
+def test_open_uses_one_tab_per_item(project_tree, stub_bin):
+    # 3 explicit slugs -> tabs, not tiled panes: the 1st item runs in the
+    # workspace's existing first tab (renamed), the 2nd and 3rd each get a
+    # freshly created tab. No pane splitting at all.
     root, make = project_tree
-    for i, slug in zip(range(5), ["alpha", "bravo", "charlie", "delta", "echo"]):
-        make(slug, mtime=i)
+    make("alpha", mtime=3); make("bravo", mtime=2); make("charlie", mtime=1)
     stub_dir, log = stub_bin
-    r = run_script(
-        root,
-        ["alpha", "bravo", "charlie", "delta", "echo"],
-        stub_bin_dir=stub_dir,
-    )
+    r = run_script(root, ["alpha", "bravo", "charlie"], stub_bin_dir=stub_dir)
     assert r.returncode == 0, r.stderr
     logged = log.read_text()
-    down_splits = [
-        l for l in logged.splitlines()
-        if "pane split" in l and "--direction down" in l
-    ]
-    assert len(down_splits) >= 1
-    pane_run_lines = [
-        l for l in logged.splitlines()
-        if "pane run" in l and "--card" in l
-    ]
-    assert len(pane_run_lines) == 5
+    tab_creates = [l for l in logged.splitlines() if "tab create" in l]
+    assert len(tab_creates) == 2
+    pane_run_lines = [l for l in logged.splitlines() if "pane run" in l and "--card" in l]
+    assert len(pane_run_lines) == 3
+    assert logged.count("--card alpha") == 1
+    assert logged.count("--card bravo") == 1
+    assert logged.count("--card charlie") == 1
 
 
 def test_card_mode_invokes_claude_with_readonly_allowlist(project_tree, stub_bin, tmp_path):

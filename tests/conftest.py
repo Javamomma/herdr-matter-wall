@@ -35,6 +35,9 @@ def stub_bin(tmp_path):
             # herdr status server must succeed; splits/create return minimal JSON
             case "$*" in
               "status server") echo "status: running";;
+              *"tab create"*) echo '{{"result":{{"root_pane":{{"pane_id":"wX:pT"}},"tab":{{"tab_id":"wX:tT"}}}}}}';;
+              *"tab list"*) echo '{{"result":{{"tabs":[{{"tab_id":"wX:t1"}}]}}}}';;
+              *"tab rename"*) echo ok;;
               *"pane split"*|*"workspace create"*) echo '{{"result":{{"pane":{{"pane_id":"wX:pY"}},"root_pane":{{"pane_id":"wX:pY"}},"workspace":{{"workspace_id":"wX"}}}}}}';;
               *"workspace list"*) echo '{{"result":{{"workspaces":[]}}}}';;
             esac

@@ -1,29 +1,38 @@
 # herdr-matter-wall
 
-A [herdr](https://herdr.dev) plugin that tiles the most-active subdirectories
+A [herdr](https://herdr.dev) plugin that opens the most-active subdirectories
 of a project as a live wall of read-only AI status cards — one small AI agent
-per subdirectory, each summarizing that item's status into a compact card.
+per subdirectory, each in its own full-screen tab, summarizing that item's
+status into a full status brief.
 
 Think of it as a glanceable wall of your active work areas: services in a
 monorepo, packages in a workspace, projects in a portfolio, matters in a
 practice — any set of subdirectories you want a standing status board for.
 
 ```
-╭ billing-service ───────╮  ╭ auth-service ───────────╮  ╭ notifications ─────────╮
-│ ● mid-refactor         │  │ ● stable                │  │ ● blocked on…          │
-│ 📅 2026-08-01 · 12d    │  │ 📅 none                 │  │ 📅 2026-07-10 OVERDUE  │
-│ ⚠ none                 │  │ ⚠ none                  │  │ ⚠ vendor outage · HIGH │
-│ ▶ ship the migration   │  │ ▶ nothing pending       │  │ ▶ page on-call         │
-╰─────────────────────────╯  ╰─────────────────────────╯  ╰─────────────────────────╯
+╭ billing-service ─────────────────────────╮
+│ ● mid-refactor, migration in review       │
+│   phase: refactor                         │
+│ ◆ 2026-08-01 · 12d                        │
+│ ⚠ none                                    │
+│ ── Recent (last 5–10d) ── ──────────────  │
+│ • 2026-07-09 merged migration PR          │
+│ • 2026-07-07 code review with team        │
+│ ── Awaiting ── ─────────────────────────  │
+│ • QA sign-off on staging                  │
+│ ▶ ship the migration                      │
+╰────────────────────────────────────────────╯
+ as of 14:32
 ```
 
-Each card is drawn by a small, pure bash renderer (`render-card.sh`) from a
-compact structured block the agent emits — colored and border-severity-coded
-by deadline/risk (red = overdue or high risk, amber = due soon or medium
-risk, green = healthy), width-fit to the pane, `NO_COLOR`-aware. The agent
-itself is spawned with a strict read-only tool allowlist — it can read files
-and `git log`, and nothing else. It cannot write, edit, or run arbitrary
-commands.
+Each item gets one card like this, full-screen in its own tab (switch tabs
+with herdr's usual `prefix+1..9` / `prefix+n` bindings). Every card is drawn
+by a small, pure bash renderer (`render-card.sh`) from a compact structured
+block the agent emits — colored and border-severity-coded by deadline/risk
+(red = overdue or high risk, amber = due soon or medium risk, green =
+healthy), width-fit to the tab, `NO_COLOR`-aware. The agent itself is spawned
+with a strict read-only tool allowlist — it can read files and `git log`,
+and nothing else. It cannot write, edit, or run arbitrary commands.
 
 ## Requirements
 
@@ -74,8 +83,8 @@ bash matter-wall.sh --refresh billing-service      # re-run one card in place
 bash matter-wall.sh --card billing-service         # render one card to stdout, standalone
 ```
 
-`--card <slug>` is what each wall pane actually runs under the hood (`open`
-spawns `bash matter-wall.sh --card <slug>` per pane): it `cd`s into the
+`--card <slug>` is what each wall tab actually runs under the hood (`open`
+spawns `bash matter-wall.sh --card <slug>` per tab): it `cd`s into the
 item's subdirectory, runs the read-only card agent, then pipes its output
 through `render-card.sh` to draw the box. It's also handy to run directly
 against a single item without opening the whole wall.
@@ -144,9 +153,11 @@ command = "javamomma.matter-wall.open"
 - **Serialized refresh:** `--refresh <slug>` takes a lockfile
   (`<target dir>/.matter-wall/refresh.lock`) so two refreshes never race each
   other. `--close` clears a stale lock.
-- **Tiling:** panes are arranged in a roughly square grid, `cols =
-  ceil(sqrt(n))`, filled first across a row (splitting right) then down
-  (splitting down, round-robin across columns) as more items are added.
+- **One matter per full-screen tab:** the first item runs in the workspace's
+  own initial tab (renamed to the item's slug); every subsequent item gets a
+  freshly created tab. No pane splitting/tiling — each card gets the full
+  pane width, so `render-card.sh` fits it to `$COLUMNS` (capped at 100)
+  instead of a cramped tiled-pane width.
 - **Idempotent open:** opening the wall again closes any existing "Matter
   Wall" workspace first, so you don't accumulate stale boards.
 - **Fail-visible:** unknown flags and missing required flag values exit `64`;
@@ -154,7 +165,10 @@ command = "javamomma.matter-wall.open"
   outside herdr exits `1` with a clear message. Nothing fails silently.
 - **Card rendering is a separate, pure step:** the card agent's prompt asks
   for a fenced `<<<CARD ... CARD>>>` block (`STATUS`/`PHASE`/`DEADLINE`/
-  `RISK`/`NEXT`); `render-card.sh` parses that block and draws the box. It
+  `RISK`/`RECENT`/`AWAITING`/`NEXT` — `RECENT` and `AWAITING` are list
+  headers followed by `- ` bullet lines); `render-card.sh` parses that block
+  and draws the box, word-wrapping long fields and bullets instead of
+  truncating them, capped at 6 `RECENT` bullets and 3 `AWAITING` bullets. It
   never calls an LLM or herdr itself, always exits `0`, and falls back to a
   dim "(no summary)" card if the agent's output doesn't contain a well-formed
   block — a card is never allowed to error the whole wall out.
