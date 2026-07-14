@@ -12,6 +12,14 @@ DEFAULT_LIMIT=5
 ALLOWLIST='Read Grep Glob Bash(git log:*)'
 WORKSPACE_LABEL="Matter Wall"
 
+# Portable file-mtime: GNU `stat -c %Y` vs BSD `stat -f %m`, detected once.
+# GNU's -c and BSD's -f are mutually exclusive, so probing settles the flavor.
+if stat -c '%Y' /dev/null >/dev/null 2>&1; then
+  STAT_MTIME_FLAG='-c'; STAT_MTIME_FMT='%Y'
+else
+  STAT_MTIME_FLAG='-f'; STAT_MTIME_FMT='%m'
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # card-prompt.md ships alongside this script (the plugin's own directory),
 # NOT the target project — herdr runs plugin actions with cwd=plugin dir.
@@ -85,11 +93,20 @@ list_candidates() {
   done
 }
 
+# Newest file mtime (epoch seconds) under a dir, portably. GNU `find -printf`
+# is unavailable on BSD, so shell out to the detected `stat` per file.
+newest_mtime() {
+  local dir="$1" ts
+  ts="$(find "$dir" -type f -exec stat "$STAT_MTIME_FLAG" "$STAT_MTIME_FMT" {} + 2>/dev/null | sort -rn | head -1)"
+  printf '%s' "${ts:-0}"
+}
+
 item_recency() {
-  local slug="$1" dir="${TARGET_DIR}/${slug}" git_ts fs_ts
+  local slug="$1" git_ts fs_ts
+  local dir="${TARGET_DIR}/${slug}"
   git_ts="$(git -C "${TARGET_DIR}" log -1 --format=%ct -- "$slug" 2>/dev/null || true)"
   git_ts="${git_ts:-0}"
-  fs_ts="$(find "$dir" -type f -printf '%T@\n' 2>/dev/null | cut -d. -f1 | sort -rn | head -1)"
+  fs_ts="$(newest_mtime "$dir")"
   fs_ts="${fs_ts:-0}"
   (( git_ts > fs_ts )) && echo "$git_ts" || echo "$fs_ts"
 }
@@ -144,21 +161,54 @@ wall_first_pane() {
 
 pane_id_from() { jq -r '.result.pane.pane_id // .result.root_pane.pane_id // empty'; }
 
+# Run "$@" under a wall-clock timeout, portably. Prefer coreutils `timeout`
+# (or `gtimeout`); on a stock macOS with neither, fall back to a pure-bash
+# background child plus a sleep-watchdog that TERMs it. Returns the child's
+# exit status (or the signal-kill status on timeout).
+run_with_timeout() {
+  local secs="$1"; shift
+  local rc=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@" || rc=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@" || rc=$?
+  else
+    # Give the child its own process group (monitor mode) so the watchdog can
+    # TERM the whole tree — a plain `kill $child` only hits the child's shell,
+    # which defers the signal until its own foreground grandchild returns.
+    local had_m=0; case "$-" in *m*) had_m=1;; esac
+    set -m
+    "$@" &
+    local child=$!
+    (( had_m )) || set +m
+    # watchdog fds → /dev/null so it never pins a command-substitution pipe.
+    { sleep "$secs" 2>/dev/null && kill -TERM -"$child" 2>/dev/null; } >/dev/null 2>&1 &
+    local watcher=$!
+    wait "$child" 2>/dev/null || rc=$?
+    kill -TERM -"$child" 2>/dev/null || true   # reap any surviving group members
+    kill -TERM "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+  fi
+  return $rc
+}
+
 do_card() {
   local slug="$1"
   local w; w="${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}"; [[ "$w" =~ ^[0-9]+$ ]] || w=80; (( w > 100 )) && w=100
   printf '\033[2m⏳ %s …\033[0m\n' "$slug"
-  cd "${TARGET_DIR}/${slug}" 2>/dev/null || true
+  cd "${TARGET_DIR}/${slug}" 2>/dev/null \
+    || { echo "matter-wall: cannot enter ${TARGET_DIR}/${slug}" >&2; exit 66; }
   local out
-  out="$(timeout "${MATTER_WALL_CARD_TIMEOUT:-120}" "$CLAUDE" -p "$(render_prompt "$slug")" \
-        --model "$MODEL" --allowedTools 'Read Grep Glob Bash(git log:*)' 2>/dev/null)" || true
+  out="$(run_with_timeout "${MATTER_WALL_CARD_TIMEOUT:-120}" "$CLAUDE" -p "$(render_prompt "$slug")" \
+        --model "$MODEL" --allowedTools "$ALLOWLIST" 2>/dev/null)" || true
   clear 2>/dev/null || printf '\033[2J\033[H'
   printf '%s' "$out" | MATTER_WALL_FORCE_COLOR=1 bash "${SCRIPT_DIR}/render-card.sh" "$slug" "$w"
 }
 
 do_open() {
   require_herdr
-  mapfile -t chosen < <(select_items)
+  local -a chosen=()
+  while IFS= read -r _item || [[ -n "$_item" ]]; do chosen+=("$_item"); done < <(select_items)
   [[ ${#chosen[@]} -gt 0 ]] || { echo "matter-wall: no items to show" >&2; exit 1; }
   echo "matter-wall: opening ${#chosen[@]} ${MODEL} card agent(s) (~${#chosen[@]} calls) — one per tab"
 
@@ -213,7 +263,7 @@ do_refresh() {
   trap "rm -f '$LOCK'" EXIT
   "$HERDR" pane rename "$root" "refresh:$slug" >/dev/null 2>&1 || true
   local prompt; prompt="$(render_prompt "$slug")"
-  "$HERDR" pane run "$root" "cd $(printf %q "${TARGET_DIR}/${slug}") && $CLAUDE -p $(printf %q "$prompt") --model $MODEL --allowedTools 'Read Grep Glob Bash(git log:*)' ; echo MATTERWALL_REFRESH_DONE"
+  "$HERDR" pane run "$root" "cd $(printf %q "${TARGET_DIR}/${slug}") && $CLAUDE -p $(printf %q "$prompt") --model $MODEL --allowedTools '$ALLOWLIST' ; echo MATTERWALL_REFRESH_DONE"
   "$HERDR" wait output "$root" --match MATTERWALL_REFRESH_DONE --timeout 600000 >/dev/null 2>&1 || true
   rm -f "$LOCK"; trap - EXIT
   echo "matter-wall: refresh complete ($slug)"
