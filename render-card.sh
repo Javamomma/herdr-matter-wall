@@ -16,6 +16,18 @@ c()    { (( USE_COLOR )) && printf '\033[38;5;%sm' "$1"; return 0; }
 bold() { (( USE_COLOR )) && printf '\033[1m'; return 0; }
 rst()  { (( USE_COLOR )) && printf '\033[0m'; return 0; }
 
+# bash 3.2 has no ${var^^}/${var,,}; fold case with tr instead.
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# portable date→epoch (midnight): BSD `date -j -f` first, GNU `date -d` fallback.
+to_epoch() {
+  local s="$1" e
+  e="$(date -j -f "%Y-%m-%d %H:%M:%S" "$s 00:00:00" +%s 2>/dev/null)" && { printf '%s' "$e"; return 0; }
+  e="$(date -d "$s" +%s 2>/dev/null)" && { printf '%s' "$e"; return 0; }
+  return 1
+}
+
 raw="$(cat)"
 block="$(printf '%s\n' "$raw" | awk '/<<<CARD/{f=1;next} /CARD>>>/{f=0} f')"
 field() { printf '%s\n' "$block" | grep -m1 "^$1:" | sed "s/^$1:[[:space:]]*//"; }
@@ -35,8 +47,10 @@ declare -a RECENT_ITEMS=() AWAITING_ITEMS=()
 if [[ -n "$block" ]]; then
   STATUS="$(field STATUS)"; PHASE="$(field PHASE)"
   DEADLINE="$(field DEADLINE)"; RISK="$(field RISK)"; NEXT="$(field NEXT)"
-  mapfile -t RECENT_ITEMS < <(list_field RECENT)
-  mapfile -t AWAITING_ITEMS < <(list_field AWAITING)
+  RECENT_ITEMS=()
+  while IFS= read -r _l || [[ -n "$_l" ]]; do RECENT_ITEMS+=("$_l"); done < <(list_field RECENT)
+  AWAITING_ITEMS=()
+  while IFS= read -r _l || [[ -n "$_l" ]]; do AWAITING_ITEMS+=("$_l"); done < <(list_field AWAITING)
 else
   FALLBACK=1
   first="$(printf '%s\n' "$raw" | grep -m1 -v '^[[:space:]]*$' | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')"
@@ -48,10 +62,10 @@ fi
 
 # deadline
 dl_text=""; dl_rank=-1
-if [[ -n "$DEADLINE" && "${DEADLINE^^}" != "NONE" ]]; then
+if [[ -n "$DEADLINE" && "$(upper "$DEADLINE")" != "NONE" ]]; then
   d="${DEADLINE%%|*}"; d="$(printf '%s' "$d" | sed 's/^ *//;s/ *$//')"
   lbl=""; [[ "$DEADLINE" == *"|"* ]] && lbl="$(printf '%s' "${DEADLINE#*|}" | sed 's/^ *//;s/ *$//')"
-  de="$(date -d "$d" +%s 2>/dev/null || true)"; te="$(date -d "$TODAY" +%s 2>/dev/null || true)"
+  de="$(to_epoch "$d" || true)"; te="$(to_epoch "$TODAY" || true)"
   if [[ -n "$de" && -n "$te" ]]; then
     days=$(( (de - te) / 86400 ))
     if   (( days <  0 )); then dl_text="$d · $(( -days ))d OVERDUE"; dl_rank=2
@@ -67,7 +81,7 @@ fi
 
 # risk
 risk_text=""; risk_rank=-1
-if [[ -n "$RISK" && "${RISK^^}" != "NONE" ]]; then
+if [[ -n "$RISK" && "$(upper "$RISK")" != "NONE" ]]; then
   rt="${RISK%%|*}"; rt="$(printf '%s' "$rt" | sed 's/^ *//;s/ *$//')"
   sev=""; [[ "$RISK" == *"|"* ]] && sev="$(printf '%s' "${RISK#*|}" | sed 's/^ *//;s/ *$//' | tr '[:lower:]' '[:upper:]')"
   case "$sev" in HIGH) risk_rank=2;; MED|MEDIUM) risk_rank=1; sev=MED;; LOW) risk_rank=0;; *) risk_rank=0; sev="${sev:-}";; esac
@@ -192,7 +206,7 @@ if (( ! FALLBACK )); then
   fi
 fi
 
-if [[ -n "$NEXT" && "${NEXT,,}" != "none" ]]; then wrapped_line "▶" 1 "$NEXT" "$CYAN"; else line "▶" 1 "nothing pending" "$DIM"; fi
+if [[ -n "$NEXT" && "$(lower "$NEXT")" != "none" ]]; then wrapped_line "▶" 1 "$NEXT" "$CYAN"; else line "▶" 1 "nothing pending" "$DIM"; fi
 bottom
 c "$DIM"; printf ' as of %s\n' "$(date +%H:%M)"; rst
 exit 0
