@@ -39,7 +39,10 @@ and nothing else. It cannot write, edit, or run arbitrary commands.
 - [herdr](https://herdr.dev) >= 0.7.0
 - the [`claude`](https://claude.com/product/claude-code) CLI, logged in
 - `jq`
-- `bash`
+- `bash` >= 3.2 — no bash-4 builtins are used, so the stock macOS
+  `/bin/bash` works; GNU and BSD `find`/`date`/`stat` are both supported
+- `timeout` (or `gtimeout`) is optional — without it, card agents are
+  bounded by a built-in pure-bash watchdog instead
 - a UTF-8 locale (the card renderer slices strings by character for
   truncation/padding, which assumes single-byte-safe UTF-8 handling)
 
